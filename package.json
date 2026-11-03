@@ -8,6 +8,8 @@
     "run:kids": "npx tsx src/cli.ts --repo=kids",
     "run:all": "npx tsx src/cli.ts --portfolio --all",
     "run:tonight": "npx tsx src/cli.ts --portfolio --all --label=\"batch: tonight\"",
+    "daemon:all": "npx tsx src/cli.ts --portfolio --all --daemon",
+    "daemon:tonight": "npx tsx src/cli.ts --portfolio --all --label=\"batch: tonight\" --daemon",
     "typecheck": "npx tsc --noEmit",
     "test": "npx tsx tests/control-plane.test.ts"
   },

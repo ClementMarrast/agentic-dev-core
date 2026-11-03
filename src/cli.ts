@@ -7,6 +7,7 @@
  * - `--label="batch: tonight"`
  * - `--issue=<number>`
  * - `--dev-engine=claude` / `--dev-engine=gemini`
+ * - `--daemon` : mode permanent en tâche de fond (polling automatique toutes les 60s)
  * - `--dry-run`
  * - `--simulate-429`
  */
@@ -20,6 +21,7 @@ export function parseCliArgs(argv: string[]) {
   const repoArg = argv.find((a) => a.startsWith("--repo="))?.split("=")[1];
   const isPortfolio = argv.includes("--portfolio") || (!repoArg && argv.includes("--all"));
   const isAll = argv.includes("--all");
+  const isDaemon = argv.includes("--daemon");
   const isDryRun = argv.includes("--dry-run") || process.env.DRY_RUN === "true";
   const simulate429 = argv.includes("--simulate-429") || process.env.SIMULATE_429 === "true";
 
@@ -36,6 +38,7 @@ export function parseCliArgs(argv: string[]) {
     repoArg,
     isPortfolio,
     isAll,
+    isDaemon,
     isDryRun,
     simulate429,
     devEngine,
@@ -44,10 +47,8 @@ export function parseCliArgs(argv: string[]) {
   };
 }
 
-export async function runCli(argv = process.argv.slice(2)) {
-  const args = parseCliArgs(argv);
+export async function runIteration(args: ReturnType<typeof parseCliArgs>, triad: ModelTriadManager) {
   const targetProjects = resolveProjects(args.repoArg, args.isPortfolio);
-  const triad = new ModelTriadManager();
 
   logInfo(`Initialisation d'agentic-dev-core (Control Plane Transverse)...`);
   logInfo(
@@ -90,6 +91,26 @@ export async function runCli(argv = process.argv.slice(2)) {
     reportPath: reportResult.localPath,
     notionUrl: reportResult.notionUrl
   };
+}
+
+export async function runCli(argv = process.argv.slice(2)) {
+  const args = parseCliArgs(argv);
+  const triad = new ModelTriadManager();
+
+  if (args.isDaemon) {
+    logInfo(`🚀 Démarrage du Control Plane en mode DAEMON permanent (veille de 60s)...`);
+    while (true) {
+      try {
+        await runIteration(args, triad);
+      } catch (err: any) {
+        logError(`Erreur lors de l'itération daemon : ${err.message}`);
+      }
+      logInfo(`💤 En veille pour 60 secondes avant le prochain check de portefeuille...`);
+      await new Promise((resolve) => setTimeout(resolve, 60000));
+    }
+  } else {
+    return await runIteration(args, triad);
+  }
 }
 
 if (require.main === module) {
