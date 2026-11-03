@@ -1,0 +1,19 @@
+{
+  "name": "agentic-dev-core",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Control Plane transverse d'orchestration agentique multi-projets (Volvo P3 Logger & Storya Kids)",
+  "scripts": {
+    "run:volvo": "npx tsx src/cli.ts --repo=volvo",
+    "run:kids": "npx tsx src/cli.ts --repo=kids",
+    "run:all": "npx tsx src/cli.ts --portfolio --all",
+    "run:tonight": "npx tsx src/cli.ts --portfolio --all --label=\"batch: tonight\"",
+    "typecheck": "npx tsc --noEmit",
+    "test": "npx tsx tests/control-plane.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.7.2"
+  }
+}
