@@ -1,7 +1,8 @@
 /**
  * Moteur central d'orchestration agentique (Control Plane Transverse)
  * - Pilote les projets externes sans modifier leurs fichiers agentiques
- * - Applique la Triade de Modèles (Aragon -> Fallback 3.8 High -> QA Flash)
+ * - Supporte le moteur Dev Claude CLI (`AGENT_DEV_ENGINE=claude`) ou Modèles Gemini (Aragon -> Fallback 3.8 High)
+ * - Applique la QA Gate (`Gemini 3.8 Flash`) : tests unitaires + typecheck + audit Gherkin
  * - Applique la boucle de rétroaction QA -> Dev (max 2 retries avant `status: blocked`)
  * - Applique la Gouvernance Git stricte (PR story -> epic/<feature>, PR finale -> main avec `🔍 Ready for Human Validation`)
  */
@@ -65,6 +66,7 @@ export interface RunnerOptions {
   dryRun?: boolean;
   simulate429?: boolean;
   skipRemoteGit?: boolean;
+  devEngine?: "gemini" | "claude";
   customDevExecutor?: (issue: GitHubIssue, model: string, attempt: number, previousQaError?: string) => Promise<void> | void;
   customQaExecutor?: (project: ProjectConfig, issue: GitHubIssue) => { success: boolean; report: string };
 }
@@ -81,6 +83,42 @@ export interface IssueProcessOutcome {
   qaRetries: number;
   prUrl?: string;
   errorReport?: string;
+}
+
+/**
+ * Exécute Claude CLI (`claude -p`) dans le répertoire du projet cible.
+ */
+export function executeClaudeDevEngine(
+  project: ProjectConfig,
+  issue: GitHubIssue,
+  attempt: number,
+  previousQaError?: string
+): void {
+  const feedbackContext = previousQaError
+    ? `\n\nATTENTION : La précédente tentative a échoué lors de la QA Gate :\n${previousQaError}\nCorrige spécifiquement cette erreur.`
+    : "";
+
+  const prompt = `Tu es l'agent Software Developer autonome.
+Ta mission est d'implémenter l'issue GitHub #${issue.number} : "${issue.title}".
+
+Description & Critères d'acceptation :
+${issue.body || "Pas de description détaillée."}
+${feedbackContext}
+
+Règles impératives :
+1. Modifie le code directement dans le répertoire pour satisfaire les critères d'acceptation.
+2. Assure-toi que les commandes de test du projet passent (${project.testCommands.join(" && ")}).
+3. Ne commite pas et ne pousse pas (la gouvernance Git est prise en charge par le Control Plane).`;
+
+  try {
+    execSync(`claude -p "${prompt.replace(/"/g, '\\"')}" --dangerously-skip-permissions`, {
+      cwd: project.localPath,
+      stdio: "inherit",
+      encoding: "utf-8"
+    });
+  } catch (err: any) {
+    throw new Error(`Échec de l'exécution Claude CLI : ${err.message}`);
+  }
 }
 
 /**
@@ -185,7 +223,8 @@ export function executeQAGate(
 
 /**
  * Traite une User Story de bout en bout avec :
- * - Tolérance de quota (Aragon -> 3.8 High sur HTTP 429)
+ * - Choix du moteur Dev (Claude CLI ou Gemini Aragon -> 3.8 High)
+ * - QA Gate (`Gemini 3.8 Flash`)
  * - Boucle de rétroaction QA -> Dev (max 2 retries avant `status: blocked`)
  * - Gouvernance Git (`us-<id>-<slug>` -> PR vers `epic/<feature>`)
  */
@@ -197,16 +236,18 @@ export async function processSingleIssue(
 ): Promise<IssueProcessOutcome> {
   const epicBranch = resolveEpicBranch(issue, project);
   const storyBranch = buildStoryBranchName(issue);
+  const devEngine = options.devEngine || (CONFIG.AGENT_DEV_ENGINE as "gemini" | "claude") || "gemini";
 
   // Vérification stricte Human Gatekeeper : aucune story ne cible main directement
   assertNotDirectPushToMain(epicBranch, "processSingleIssue target epicBranch");
+
+  const effectivePrimaryModel = devEngine === "claude" ? "Claude Code CLI" : triad.getActiveDevModel();
 
   logInfo(`\n------------------------------------------------------------`);
   logInfo(`${COLORS.bold}[${project.name}] Issue #${issue.number} : "${issue.title}"${COLORS.reset}`);
   logInfo(`Branche d'Epic cible : ${COLORS.cyan}${epicBranch}${COLORS.reset}`);
   logInfo(`Branche User Story   : ${COLORS.cyan}${storyBranch}${COLORS.reset}`);
-  logInfo(`Modèle Dev Primaire  : ${COLORS.magenta}${triad.getActiveDevModel()}${COLORS.reset}`);
-  logInfo(`Modèle Dev Fallback  : ${COLORS.yellow}${triad.getFallbackDevModel()}${COLORS.reset}`);
+  logInfo(`Moteur Dev           : ${COLORS.magenta}${devEngine.toUpperCase()} (${effectivePrimaryModel})${COLORS.reset}`);
   logInfo(`Modèle QA Gate       : ${COLORS.cyan}${triad.getQaModel()}${COLORS.reset}`);
   logInfo(`------------------------------------------------------------`);
 
@@ -243,7 +284,7 @@ export async function processSingleIssue(
         issue,
         storyBranch,
         epicBranch,
-        devModelUsed: triad.getActiveDevModel(),
+        devModelUsed: effectivePrimaryModel,
         fallbackTriggered: triad.isFallbackActive(),
         qaRetries: 0,
         errorReport: err.message
@@ -253,7 +294,7 @@ export async function processSingleIssue(
 
   let attempt = 0;
   let lastQaReport = "";
-  let devModelUsed = triad.getActiveDevModel();
+  let devModelUsed = effectivePrimaryModel;
   let fallbackTriggered = triad.isFallbackActive();
   let fallbackReason: string | undefined;
   let simulated429Fired = false;
@@ -265,40 +306,55 @@ export async function processSingleIssue(
       );
     }
 
-    // 1. Exécution de la passe Dev avec tolérance de quota (Aragon -> 3.8 High)
-    const devResult = await triad.executeDevTask(
-      async (model) => {
-        if (options.simulate429 && !simulated429Fired && model === triad.getPrimaryDevModel()) {
-          simulated429Fired = true;
-          throw new QuotaExhaustedError(
-            `HTTP 429 Too Many Requests: RESOURCE_EXHAUSTED on model ${model}`
+    // 1. Exécution du Dev (Claude CLI ou Triade Gemini)
+    if (devEngine === "claude") {
+      logDev(
+        "Claude Code CLI",
+        attempt === 0
+          ? `Conception et implémentation de la story #${issue.number} sur '${storyBranch}' via Claude CLI...`
+          : `Correction suite aux logs QA (retry #${attempt}) via Claude CLI : ${lastQaReport}`
+      );
+      if (options.customDevExecutor) {
+        await options.customDevExecutor(issue, "Claude Code CLI", attempt, lastQaReport || undefined);
+      } else if (!options.dryRun) {
+        executeClaudeDevEngine(project, issue, attempt, lastQaReport || undefined);
+      }
+      devModelUsed = "Claude Code CLI";
+    } else {
+      const devResult = await triad.executeDevTask(
+        async (model) => {
+          if (options.simulate429 && !simulated429Fired && model === triad.getPrimaryDevModel()) {
+            simulated429Fired = true;
+            throw new QuotaExhaustedError(
+              `HTTP 429 Too Many Requests: RESOURCE_EXHAUSTED on model ${model}`
+            );
+          }
+
+          logDev(
+            model,
+            attempt === 0
+              ? `Conception et implémentation de la story #${issue.number} sur '${storyBranch}'...`
+              : `Correction suite aux logs QA (retry #${attempt}) : ${lastQaReport}`
+          );
+
+          if (options.customDevExecutor) {
+            await options.customDevExecutor(issue, model, attempt, lastQaReport || undefined);
+          }
+
+          return `Dev pass completed by ${model}`;
+        },
+        (reason, fallbackModel) => {
+          logWarning(
+            `⚡ [Tolérance Quota] Saturation détectée sur '${triad.getPrimaryDevModel()}' (${reason}). Bascule transparente immédiate sur '${fallbackModel}' !`
           );
         }
+      );
 
-        logDev(
-          model,
-          attempt === 0
-            ? `Conception et implémentation de la story #${issue.number} sur '${storyBranch}'...`
-            : `Correction suite aux logs QA (retry #${attempt}) : ${lastQaReport}`
-        );
-
-        if (options.customDevExecutor) {
-          await options.customDevExecutor(issue, model, attempt, lastQaReport || undefined);
-        }
-
-        return `Dev pass completed by ${model}`;
-      },
-      (reason, fallbackModel) => {
-        logWarning(
-          `⚡ [Tolérance Quota] Saturation détectée sur '${triad.getPrimaryDevModel()}' (${reason}). Bascule transparente immédiate sur '${fallbackModel}' !`
-        );
+      devModelUsed = devResult.modelUsed;
+      fallbackTriggered = fallbackTriggered || devResult.fallbackTriggered;
+      if (devResult.fallbackReason) {
+        fallbackReason = devResult.fallbackReason;
       }
-    );
-
-    devModelUsed = devResult.modelUsed;
-    fallbackTriggered = fallbackTriggered || devResult.fallbackTriggered;
-    if (devResult.fallbackReason) {
-      fallbackReason = devResult.fallbackReason;
     }
 
     // 2. Exécution de la QA Gate (Gemini 3.8 Flash)
@@ -388,6 +444,17 @@ export async function processSingleIssue(
   } else {
     try {
       assertNotDirectPushToMain(storyBranch, "git push storyBranch");
+      // Commit des changements éventuels de Claude
+      const gitStatus = runInProject(project, "git status --porcelain", { silent: true });
+      if (gitStatus.length > 0) {
+        runInProject(project, "git add -A", { silent: true });
+        runInProject(
+          project,
+          `git commit -m "feat(issue-${issue.number}): ${issue.title.replace(/"/g, '\\"')}"`,
+          { silent: true }
+        );
+      }
+
       runInProject(project, `git push -u origin ${storyBranch}`, { silent: true });
       const out = runInProject(project, prSpec.cmd, { silent: true });
       prUrl = out.trim();
@@ -442,7 +509,6 @@ export async function runProjectCycle(
   let epicBranch = project.defaultEpicBranch;
 
   if (selectedIssues.length === 0) {
-    // Si aucune issue n'est sélectionnée ou en mode vérification à blanc, on exécute une vérification d'intégrité QA + Modèle
     logInfo(`Vérification d'intégrité directe sur ${project.name}...`);
     let simulated429Fired = false;
     const devCheck = await triad.executeDevTask(

@@ -6,11 +6,12 @@
  * - `--all`
  * - `--label="batch: tonight"`
  * - `--issue=<number>`
+ * - `--dev-engine=claude` / `--dev-engine=gemini`
  * - `--dry-run`
  * - `--simulate-429`
  */
 
-import { resolveProjects } from "./config";
+import { CONFIG, resolveProjects } from "./config";
 import { ModelTriadManager } from "./model-triad";
 import { publishConsolidatedReport } from "./reporter";
 import { logError, logInfo, logSuccess, runProjectCycle } from "./runner";
@@ -21,6 +22,9 @@ export function parseCliArgs(argv: string[]) {
   const isAll = argv.includes("--all");
   const isDryRun = argv.includes("--dry-run") || process.env.DRY_RUN === "true";
   const simulate429 = argv.includes("--simulate-429") || process.env.SIMULATE_429 === "true";
+
+  const devEngineArg = argv.find((a) => a.startsWith("--dev-engine="))?.split("=")[1];
+  const devEngine = (devEngineArg || process.env.AGENT_DEV_ENGINE || CONFIG.AGENT_DEV_ENGINE || "gemini").toLowerCase() as "gemini" | "claude";
 
   const labelArg = argv.find((a) => a.startsWith("--label="));
   const label = labelArg ? labelArg.slice("--label=".length).replace(/^["']|["']$/g, "").trim() : undefined;
@@ -34,6 +38,7 @@ export function parseCliArgs(argv: string[]) {
     isAll,
     isDryRun,
     simulate429,
+    devEngine,
     label,
     issueNumber
   };
@@ -46,7 +51,7 @@ export async function runCli(argv = process.argv.slice(2)) {
 
   logInfo(`Initialisation d'agentic-dev-core (Control Plane Transverse)...`);
   logInfo(
-    `Triade de Modèles : Dev='${triad.getPrimaryDevModel()}' | Fallback='${triad.getFallbackDevModel()}' | QA='${triad.getQaModel()}'`
+    `Configuration Moteurs : Dev Engine='${args.devEngine.toUpperCase()}' | Dev Model='${triad.getPrimaryDevModel()}' | Fallback='${triad.getFallbackDevModel()}' | QA Gate='${triad.getQaModel()}'`
   );
   logInfo(`Projets ciblés (${targetProjects.length}) : ${targetProjects.map((p) => p.name).join(", ")}`);
   if (args.label) {
@@ -63,7 +68,8 @@ export async function runCli(argv = process.argv.slice(2)) {
       label: args.label,
       issueNumber: args.issueNumber,
       dryRun: args.isDryRun,
-      simulate429: args.simulate429
+      simulate429: args.simulate429,
+      devEngine: args.devEngine
     });
     projectSummaries.push(summary);
   }

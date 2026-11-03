@@ -14,6 +14,9 @@ export interface ProjectConfig {
 }
 
 export const CONFIG = {
+  // Moteur Dev : 'gemini' (défaut) ou 'claude' (Claude CLI headless)
+  AGENT_DEV_ENGINE: (process.env.AGENT_DEV_ENGINE || "gemini").toLowerCase(),
+
   // Triade de modèles IA & Tolérance de Quota (Haute Disponibilité)
   AGENT_DEV_MODEL: process.env.AGENT_DEV_MODEL || "Gemini 4 Aragon",
   AGENT_DEV_FALLBACK_MODEL: process.env.AGENT_DEV_FALLBACK_MODEL || "Gemini 3.8 High",
