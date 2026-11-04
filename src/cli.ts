@@ -34,6 +34,11 @@ export function parseCliArgs(argv: string[]) {
   const issueArg = argv.find((a) => a.startsWith("--issue="));
   const issueNumber = issueArg ? Number(issueArg.split("=")[1]) : undefined;
 
+  const maxFeaturesArg = argv.find((a) => a.startsWith("--max-features="))?.split("=")[1];
+  const maxFeatures = maxFeaturesArg ? Number(maxFeaturesArg) : CONFIG.MAX_FEATURES_PER_BATCH;
+
+  const skipPendingPrCheck = argv.includes("--skip-pending-check") || argv.includes("--force");
+
   return {
     repoArg,
     isPortfolio,
@@ -43,7 +48,9 @@ export function parseCliArgs(argv: string[]) {
     simulate429,
     devEngine,
     label,
-    issueNumber
+    issueNumber,
+    maxFeatures,
+    skipPendingPrCheck
   };
 }
 
@@ -55,6 +62,7 @@ export async function runIteration(args: ReturnType<typeof parseCliArgs>, triad:
     `Configuration Moteurs : Dev Engine='${args.devEngine.toUpperCase()}' | Dev Model='${triad.getPrimaryDevModel()}' | Fallback='${triad.getFallbackDevModel()}' | QA Gate='${triad.getQaModel()}'`
   );
   logInfo(`Projets ciblés (${targetProjects.length}) : ${targetProjects.map((p) => p.name).join(", ")}`);
+  logInfo(`Plafond de batch : max ${args.maxFeatures} feature(s) par projet (isolation des APKs)`);
   if (args.label) {
     logInfo(`Filtre de label actif : '${args.label}'`);
   }
@@ -68,8 +76,10 @@ export async function runIteration(args: ReturnType<typeof parseCliArgs>, triad:
       all: args.isAll,
       label: args.label,
       issueNumber: args.issueNumber,
+      maxFeatures: args.maxFeatures,
       dryRun: args.isDryRun,
       simulate429: args.simulate429,
+      skipPendingPrCheck: args.skipPendingPrCheck,
       devEngine: args.devEngine
     });
     projectSummaries.push(summary);
