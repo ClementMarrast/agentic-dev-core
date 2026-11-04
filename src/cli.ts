@@ -80,6 +80,7 @@ export async function runIteration(args: ReturnType<typeof parseCliArgs>, triad:
       dryRun: args.isDryRun,
       simulate429: args.simulate429,
       skipPendingPrCheck: args.skipPendingPrCheck,
+      checkPendingPrsInDryRun: true,
       devEngine: args.devEngine
     });
     projectSummaries.push(summary);
