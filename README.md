@@ -29,7 +29,10 @@ Ce Control Plane pilote le développement autonome, la recette QA Gherkin et la 
 - 🛑 **Interdiction absolue de pousser directement sur `main`** (`GitGovernanceError`).
 - Chaque User Story crée sa branche de travail normalisée `us-<id>-<slug>` à partir de la branche d'Epic (`epic/<nom-feature>`).
 - L'agent QA valide et fusionne la PR de la story dans la branche d'Epic.
-- Une fois toutes les stories d'un Epic intégrées, le Control Plane ouvre la PR finale `epic/<nom-feature> -> main` avec l'étiquette : **`🔍 Ready for Human Validation`**.
+- Une fois les stories d'un lot intégrées, le Control Plane ouvre la PR finale `epic/<nom-feature> -> main` avec l'étiquette : **`🔍 Ready for Human Validation`**.
+- 🔒 **Règle d'Isolation APK & PR Unique (1 feature par batch) :**
+  - **Plafond par batch :** Chaque projet traite au maximum **1 seule feature** (`MAX_FEATURES_PER_BATCH = 1`) par batch de nuit pour permettre un test indépendant et sans ambiguïté de l'APK généré.
+  - **Blocage strict des batchs suivants :** Tant qu'une PR avec l'étiquette `🔍 Ready for Human Validation` ou ciblant `main` est ouverte ("en cours"), tout batch ultérieur pour ce projet est **gelé**. Le Control Plane ne démarre aucun nouveau développement tant que l'humain n'a pas testé l'APK et validé/mergé la PR en cours.
 
 ---
 
