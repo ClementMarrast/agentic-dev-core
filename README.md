@@ -27,12 +27,17 @@ Ce Control Plane pilote le développement autonome, la recette QA Gherkin et la 
 ## 🛡️ Gouvernance Git Absolue (Human Gatekeeper)
 
 - 🛑 **Interdiction absolue de pousser directement sur `main`** (`GitGovernanceError`).
-- Chaque User Story crée sa branche de travail normalisée `us-<id>-<slug>` à partir de la branche d'Epic (`epic/<nom-feature>`).
-- L'agent QA valide et fusionne la PR de la story dans la branche d'Epic.
-- Une fois les stories d'un lot intégrées, le Control Plane ouvre la PR finale `epic/<nom-feature> -> main` avec l'étiquette : **`🔍 Ready for Human Validation`**.
-- 🔒 **Règle d'Isolation APK & PR Unique (1 feature par batch) :**
-  - **Plafond par batch :** Chaque projet traite au maximum **1 seule feature** (`MAX_FEATURES_PER_BATCH = 1`) par batch de nuit pour permettre un test indépendant et sans ambiguïté de l'APK généré.
-  - **Blocage strict des batchs suivants :** Tant qu'une PR avec l'étiquette `🔍 Ready for Human Validation` ou ciblant `main` est ouverte ("en cours"), tout batch ultérieur pour ce projet est **gelé**. Le Control Plane ne démarre aucun nouveau développement tant que l'humain n'a pas testé l'APK et validé/mergé la PR en cours.
+- 🌿 **Démarrage strict depuis `main` (Isolation des branches) :**
+  - Chaque User Story/Feature repart **strictement de `origin/main` propre et à jour** (`git checkout -B us-<id>-<slug> main`), jamais d'une branche ou d'un Epic en cours de développement.
+  - Aucun code non validé ou en attente de review n'est hérité par les développements suivants.
+- 📱 **Isolation des APKs (1 Feature par nuit max) :**
+  - Chaque nuit et par projet, le Control Plane développe au maximum **1 seule feature** (`MAX_FEATURES_PER_BATCH = 1`).
+  - La PR est ouverte **directement vers `main`** avec l'étiquette **`🔍 Ready for Human Validation`**, produisant un APK unitaire et reproductible.
+  - La même nuit, tout nouveau batch est mis en pause (`prCreatedTonight`) pour éviter d'empiler des APKs.
+- 🌅 **Autonomie pour la nuit suivante :**
+  - Si la nuit suivante arrive alors que la PR de la veille n'a pas encore été revue par l'humain, **le nouveau batch n'est pas bloqué**.
+  - Il démarre à nouveau depuis le `main` stable, produit sa propre PR et son propre APK.
+  - L'humain conserve ainsi l'APK de la veille et dispose du nouvel APK, tous deux testables de manière 100% indépendante.
 
 ---
 

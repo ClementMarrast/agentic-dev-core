@@ -13,6 +13,7 @@ import { CONFIG, ProjectConfig } from "./config";
 import { parseGherkinScenarios, validateGherkinCoverage } from "./gherkin-validator";
 import {
   assertNotDirectPushToMain,
+  buildFeaturePrCommand,
   buildFinalEpicPrCommand,
   buildStoryBranchName,
   buildStoryPrCommand,
@@ -275,22 +276,20 @@ export async function processSingleIssue(
       { cwd: project.localPath, stdio: "pipe" }
     );
 
-    // Préparation de la branche d'Epic et de la branche de Story
+    // Isolation absolue : Chaque feature repart STRICTEMENT de origin/main propre
     try {
-      runInProject(
-        project,
-        `git checkout ${epicBranch} 2>/dev/null || git checkout -b ${epicBranch}`,
-        { silent: true }
-      );
-      runInProject(project, `git checkout -B ${storyBranch} ${epicBranch}`, { silent: true });
+      runInProject(project, "git checkout main", { silent: true });
+      runInProject(project, "git fetch origin main", { silent: true });
+      runInProject(project, "git reset --hard origin/main", { silent: true });
+      runInProject(project, `git checkout -B ${storyBranch} main`, { silent: true });
     } catch (err: any) {
-      logError(`Erreur lors de la création de la branche ${storyBranch} : ${err.message}`);
+      logError(`Erreur lors de la création de la branche ${storyBranch} depuis main : ${err.message}`);
       return {
         success: false,
         blocked: true,
         issue,
         storyBranch,
-        epicBranch,
+        epicBranch: "main",
         devModelUsed: effectivePrimaryModel,
         fallbackTriggered: triad.isFallbackActive(),
         qaRetries: 0,
@@ -433,10 +432,9 @@ export async function processSingleIssue(
     };
   }
 
-  // 3. Succès QA : Ouverture et fusion de la PR de la story dans la branche d'Epic
-  const prSpec = buildStoryPrCommand(
+  // 3. Succès QA : Ouverture de la PR Feature directement vers main avec '🔍 Ready for Human Validation'
+  const prSpec = buildFeaturePrCommand(
     project,
-    epicBranch,
     storyBranch,
     issue,
     devModelUsed,
@@ -447,7 +445,7 @@ export async function processSingleIssue(
 
   if (options.dryRun || options.skipRemoteGit) {
     prUrl = `https://github.com/${project.githubRepo}/pull/dry-run-${issue.number}`;
-    logInfo(`[Gouvernance Git] PR Story préparée : ${storyBranch} -> ${epicBranch}`);
+    logInfo(`[Gouvernance Git] PR Feature préparée vers 'main' : ${storyBranch} -> main [${prSpec.label}]`);
   } else {
     try {
       assertNotDirectPushToMain(storyBranch, "git push storyBranch");
@@ -464,12 +462,14 @@ export async function processSingleIssue(
       }
 
       runInProject(project, `git push -u origin ${storyBranch}`, { silent: true });
+      ensureGitHubLabelExists(project, CONFIG.LABELS.READY_FOR_HUMAN, "FBCA04");
       const out = runInProject(project, prSpec.cmd, { silent: true });
       prUrl = out.trim();
-      logSuccess(`PR de Story créée vers '${epicBranch}' : ${prUrl}`);
+      logSuccess(`PR Feature ouverte vers 'main' [${CONFIG.LABELS.READY_FOR_HUMAN}] : ${prUrl}`);
 
-      logQA(triad.getQaModel(), `Fusion de la PR '${storyBranch}' dans '${epicBranch}'...`);
-      runInProject(project, `gh pr merge ${storyBranch} --merge -R ${project.githubRepo}`, { silent: true });
+      // Nettoyage : repositionnement propre sur main
+      runInProject(project, "git checkout main", { silent: true });
+      runInProject(project, "git reset --hard origin/main", { silent: true });
     } catch (err: any) {
       logWarning(`Opération PR Git distante ignorée ou déjà mergée : ${err.message}`);
     }
@@ -480,7 +480,7 @@ export async function processSingleIssue(
     blocked: false,
     issue,
     storyBranch,
-    epicBranch,
+    epicBranch: "main",
     devModelUsed,
     fallbackTriggered,
     fallbackReason,
@@ -508,7 +508,8 @@ export async function runProjectCycle(
     throw new Error(`Adaptateur projet invalide pour ${project.name} : ${adapterCheck.reason}`);
   }
 
-  // 1. Vérification Human Gatekeeper : pas plus de 1 PR à valider par projet à la fois
+  // 1. Vérification Human Gatekeeper : 1 feature max développée par projet et par nuit
+  const todayStr = new Date().toISOString().slice(0, 10);
   const shouldCheckPendingPrs =
     options.customPendingPrFetcher !== undefined ||
     (!options.skipPendingPrCheck && (!options.dryRun || options.checkPendingPrsInDryRun));
@@ -519,21 +520,28 @@ export async function runProjectCycle(
       ? fetchPendingValidationPrs(project)
       : [];
 
-  if (pendingPrs.length >= CONFIG.MAX_PENDING_PRS_PER_PROJECT) {
-    const activePr = pendingPrs[0];
+  // Détecter si une PR a déjà été créée aujourd'hui / cette nuit pour ce projet
+  const prCreatedTonight = pendingPrs.find((pr) => {
+    if (!pr.createdAt) return false;
+    return pr.createdAt.slice(0, 10) === todayStr;
+  });
+
+  if (prCreatedTonight && !options.skipPendingPrCheck) {
     logWarning(
-      `🛑 [Human Gatekeeper] Batch bloqué pour ${project.name} : une PR de validation humaine est déjà en cours.`
+      `⏸️ [Gouvernance Nightly] 1 feature a déjà été développée cette nuit pour ${project.name} (PR #${prCreatedTonight.number} : "${prCreatedTonight.title}").`
     );
-    logWarning(`   -> PR active #${activePr.number} : "${activePr.title}" (${activePr.url})`);
     logWarning(
-      `   -> Règle d'isolation APK : maximum 1 PR à valider par projet. Aucun nouveau développement tant que cette PR n'est pas testée et validée.`
+      `   -> Règle d'isolation APK : maximum 1 feature / 1 APK développé par nuit pour tester de façon unitaire.`
+    );
+    logWarning(
+      `   -> La nuit suivante, un nouveau développement pourra être lancé depuis 'main', même si cette PR n'est pas encore validée.`
     );
 
     return {
       projectId: project.id,
       projectName: project.name,
       githubRepo: project.githubRepo,
-      epicBranch: project.defaultEpicBranch,
+      epicBranch: "main",
       devModelUsed: triad.getActiveDevModel(),
       fallbackTriggered: triad.isFallbackActive(),
       qaModelUsed: triad.getQaModel(),
@@ -541,10 +549,10 @@ export async function runProjectCycle(
       testCommandsRun: project.testCommands,
       mergedStories: [],
       blockedStories: [],
-      finalEpicPrUrl: activePr.url,
+      finalEpicPrUrl: prCreatedTonight.url,
       humanValidationLabel: CONFIG.LABELS.READY_FOR_HUMAN,
       blockedByPendingPr: true,
-      pendingValidationPr: activePr
+      pendingValidationPr: prCreatedTonight
     };
   }
 
@@ -631,37 +639,8 @@ export async function runProjectCycle(
       retries: o.qaRetries
     }));
 
-  const dateStr = new Date().toISOString().slice(0, 10);
-  let finalEpicPrUrl: string | undefined;
-
-  // Quand tous les tickets du lot d'Epic sont intégrés (et au moins 1 mergé sans blocage)
-  if (mergedStories.length > 0 && blockedStories.length === 0) {
-    const finalPrSpec = buildFinalEpicPrCommand(
-      project,
-      epicBranch,
-      dateStr,
-      mergedStories,
-      triad.getActiveDevModel(),
-      triad.getQaModel()
-    );
-
-    if (options.dryRun || options.skipRemoteGit) {
-      finalEpicPrUrl = `https://github.com/${project.githubRepo}/pull/epic-release-${epicBranch.replace(/\//g, "-")}`;
-      logSuccess(
-        `[Human Gatekeeper] PR Finale d'Epic prête vers 'main' avec étiquette '${finalPrSpec.label}' : ${finalEpicPrUrl}`
-      );
-    } else {
-      try {
-        ensureGitHubLabelExists(project, CONFIG.LABELS.READY_FOR_HUMAN, "FBCA04");
-        assertNotDirectPushToMain(epicBranch, "git push epicBranch");
-        runInProject(project, `git push -u origin ${epicBranch}`, { silent: true });
-        finalEpicPrUrl = runInProject(project, finalPrSpec.cmd, { silent: true }).trim();
-        logSuccess(`PR Finale ouverte vers 'main' [${CONFIG.LABELS.READY_FOR_HUMAN}] : ${finalEpicPrUrl}`);
-      } catch (err: any) {
-        logWarning(`Ouverture PR finale vers main ignorée ou déjà existante : ${err.message}`);
-      }
-    }
-  }
+  // La PR de Feature a déjà été ouverte directement vers main avec le tag Ready for Human Validation
+  const finalEpicPrUrl = mergedStories[0]?.prUrl;
 
   const anyFallback = outcomes.some((o) => o.fallbackTriggered);
   const lastDevModel = outcomes[outcomes.length - 1]?.devModelUsed || triad.getActiveDevModel();

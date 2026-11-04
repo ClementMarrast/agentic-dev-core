@@ -229,6 +229,41 @@ export function buildStoryBranchName(issue: GitHubIssue): string {
 }
 
 /**
+ * Construit la commande d'ouverture de PR d'une Feature directement vers `main` avec l'étiquette `🔍 Ready for Human Validation`.
+ * Chaque feature part de `main` et cible `main`, permettant une validation et un test APK 100% isolés.
+ */
+export function buildFeaturePrCommand(
+  project: ProjectConfig,
+  storyBranch: string,
+  issue: GitHubIssue,
+  devModel: string,
+  qaModel: string
+): { base: string; head: string; label: string; cmd: string; title: string; body: string } {
+  const commitInfo = formatConventionalCommit(issue);
+  const title = commitInfo.prTitle;
+  const label = CONFIG.LABELS.READY_FOR_HUMAN;
+  const body = [
+    `Résout #${issue.number}.`,
+    "",
+    `- **Branche source :** \`${storyBranch}\` (créée à partir de \`main\`)`,
+    `- **Modèle Dev :** \`${devModel}\``,
+    `- **Validé par QA Gate :** \`${qaModel}\``,
+    "",
+    `🔍 **Human Gatekeeper :** Prêt pour génération et test unitaire de l'APK indépendant avant merge sur \`main\`.`
+  ].join("\n");
+
+  const escapedTitle = title.replace(/"/g, '\\"').replace(/`/g, "\\`");
+  const escapedBody = body
+    .replace(/"/g, '\\"')
+    .replace(/`/g, "\\`")
+    .replace(/\$/g, "\\$")
+    .replace(/\n/g, "\\n");
+
+  const cmd = `gh pr create --base main --head "${storyBranch}" --title "${escapedTitle}" --body "${escapedBody}" --label "${label}" -R ${project.githubRepo}`;
+  return { base: "main", head: storyBranch, label, cmd, title, body };
+}
+
+/**
  * Construit la commande d'ouverture de PR d'une User Story vers la branche d'Epic.
  */
 export function buildStoryPrCommand(

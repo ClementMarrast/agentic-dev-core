@@ -50,10 +50,10 @@ export function generateConsolidatedMarkdownReport(report: ConsolidatedNightlyRe
       if (proj.blockedByPendingPr && proj.pendingValidationPr) {
         return `## 📦 Projet : ${proj.projectName} (\`${proj.githubRepo}\`)
 
-- **Statut du Batch :** ⏸️ **SUSPENDU (PR en cours de validation humaine)**
+- **Statut du Batch :** ⏸️ **SUSPENDU (1 feature déjà développée cette nuit)**
 - **PR Active à valider :** [PR #${proj.pendingValidationPr.number} — ${proj.pendingValidationPr.title}](${proj.pendingValidationPr.url})
 - **Branche :** \`${proj.pendingValidationPr.headRefName}\` -> \`${proj.pendingValidationPr.baseRefName}\`
-- **Règle de Gouvernance :** Limite de 1 PR à valider par projet. Les batchs suivants sont bloqués tant que l'APK / la feature de cette PR n'est pas testée et validée par l'humain.
+- **Règle d'Isolation APK :** 1 feature par nuit max pour garantir un test indépendant. La nuit suivante, un nouveau développement démarrera directement depuis \`main\` même si cette PR n'est pas encore validée.
 
 ### ℹ️ Détails
 _Aucune nouvelle User Story développée dans ce cycle pour garantir l'indépendance de validation des APKs._`;

@@ -249,52 +249,67 @@ async function runTests() {
   console.log(`  ✔ PASS : Rapport matinal consolidé généré avec succès (${reportRes.localPath}).`);
 
   // -------------------------------------------------------------------------
-  // SCÉNARIO 5 : Isolation des APKs (1 Feature Max & Blocage PR en cours)
+  // SCÉNARIO 5 : Isolation des APKs (1 Feature / Nuit & Nouveau Run depuis Main)
   // -------------------------------------------------------------------------
-  console.log("\n--- [Scénario 5] Isolation des APKs : Limite 1 Feature & Blocage PR en cours ---");
+  console.log("\n--- [Scénario 5] Isolation des APKs : Limite 1 Feature/Nuit & Repartir de Main ---");
 
   // 5.a Limite de 1 Feature par batch
   assert.strictEqual(CONFIG.MAX_FEATURES_PER_BATCH, 1, "La configuration par défaut doit limiter à 1 feature par batch");
-  assert.strictEqual(CONFIG.MAX_PENDING_PRS_PER_PROJECT, 1, "Il ne doit jamais y avoir plus de 1 PR à valider ouverte par projet");
 
-  // 5.b Blocage strict si une PR de validation humaine est déjà en cours
-  const mockPendingPr: PendingPrInfo = {
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  // 5.b Throttling même nuit : Si une PR a déjà été créée aujourd'hui, le run de la nuit est suspendu
+  const mockTonightPr: PendingPrInfo = {
     number: 72,
     title: "[Epic Release] Volvo P3 Logger : epic/expo-cockpit (2026-11-04)",
     url: "https://github.com/ClementMarrast/volvo-p3-logger/pull/72",
-    headRefName: "epic/expo-cockpit",
+    headRefName: "us-71-ota-system",
     baseRefName: "main",
-    labels: [{ name: CONFIG.LABELS.READY_FOR_HUMAN }]
+    labels: [{ name: CONFIG.LABELS.READY_FOR_HUMAN }],
+    createdAt: `${todayStr}T02:00:00Z`
   };
 
   const blockedCycle = await runProjectCycle(volvo, new ModelTriadManager(), {
     dryRun: true,
-    customPendingPrFetcher: () => [mockPendingPr]
+    customPendingPrFetcher: () => [mockTonightPr]
   });
 
-  assert.strictEqual(blockedCycle.blockedByPendingPr, true, "Le cycle doit être marqué comme bloqué par une PR en cours");
-  assert.strictEqual(blockedCycle.mergedStories.length, 0, "Aucune story ne doit être développée ou mergée lorsqu'une PR est en cours");
+  assert.strictEqual(blockedCycle.blockedByPendingPr, true, "Le cycle de la même nuit doit être suspendu (1 feature max déjà développée)");
+  assert.strictEqual(blockedCycle.mergedStories.length, 0, "Aucune story supplémentaire ne doit être développée la même nuit");
   assert.strictEqual(blockedCycle.pendingValidationPr?.number, 72);
-  console.log("  ✔ PASS : Batch strictement bloqué lorsqu'une PR de validation humaine est déjà ouverte.");
+  console.log("  ✔ PASS : Throttling même nuit actif (1 PR max par nuit pour isoler l'APK unitairement).");
 
-  // 5.c Rapport matinal reflétant la suspension du projet
+  // 5.c Rapport matinal reflétant la suspension pour la nuit en cours
   const reportWithSuspension = generateConsolidatedMarkdownReport({
-    date: "2026-11-04",
+    date: todayStr,
     projects: [blockedCycle]
   });
-  assert.ok(reportWithSuspension.includes("⏸️ **SUSPENDU (PR en cours de validation humaine)**"));
+  assert.ok(reportWithSuspension.includes("⏸️ **SUSPENDU (1 feature déjà développée cette nuit)**"));
   assert.ok(reportWithSuspension.includes("PR #72"));
-  assert.ok(reportWithSuspension.includes("Limite de 1 PR à valider par projet"));
-  console.log("  ✔ PASS : Rapport consolidé affiche fidèlement l'état 'SUSPENDU' et le lien vers la PR active.");
+  assert.ok(reportWithSuspension.includes("1 feature par nuit max"));
+  console.log("  ✔ PASS : Rapport consolidé affiche l'état suspendu et le lien vers la PR de la nuit.");
 
-  // 5.d Déblocage immédiat dès que la PR est validée et mergée
-  const unblockedCycle = await runProjectCycle(volvo, new ModelTriadManager(), {
+  // 5.d Nuit suivante : Si une PR précédente n'est pas encore reviewée (date antérieure), le nouveau run démarre depuis main !
+  const mockYesterdayPr: PendingPrInfo = {
+    number: 60,
+    title: "[Epic Release] Volvo P3 Logger : epic/multi-brand-core (2026-11-03)",
+    url: "https://github.com/ClementMarrast/volvo-p3-logger/pull/60",
+    headRefName: "us-47-migration-apps",
+    baseRefName: "main",
+    labels: [{ name: CONFIG.LABELS.READY_FOR_HUMAN }],
+    createdAt: "2026-11-03T22:00:00Z" // Nuit précédente non validée
+  };
+
+  const nextNightCycle = await runProjectCycle(volvo, new ModelTriadManager(), {
     dryRun: true,
-    customPendingPrFetcher: () => [] // PR mergée ou fermée -> liste vide
+    customPendingPrFetcher: () => [mockYesterdayPr] // PR de la veille encore ouverte
   });
-  assert.strictEqual(unblockedCycle.blockedByPendingPr, undefined);
-  assert.strictEqual(unblockedCycle.mergedStories.length, 1, "Dès déblocage, exactement 1 feature est sélectionnée et traitée");
-  console.log("  ✔ PASS : Déblocage automatique dès que la PR en cours est clôturée.");
+
+  assert.strictEqual(nextNightCycle.blockedByPendingPr, undefined, "La nuit suivante n'est pas bloquée par la PR non revue de la veille");
+  assert.strictEqual(nextNightCycle.mergedStories.length, 1, "Une nouvelle feature est développée pour cette nouvelle nuit");
+  assert.strictEqual(nextNightCycle.epicBranch, "main", "La nouvelle feature cible directement 'main'");
+  assert.ok(nextNightCycle.finalEpicPrUrl, "Une nouvelle PR est ouverte pour validation humaine et génération de son APK indépendant");
+  console.log("  ✔ PASS : Nuit suivante débloquée et autonome : nouvelle feature développée depuis 'main' avec son APK propre.");
 
   // Vérification finale de non-altération des dépôts cibles
   const volvoFinalStatus = getGitStatusSnapshot(volvo.localPath);
