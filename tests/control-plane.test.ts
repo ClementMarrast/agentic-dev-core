@@ -17,6 +17,7 @@ import {
   buildFinalEpicPrCommand,
   buildStoryBranchName,
   buildStoryPrCommand,
+  formatConventionalCommit,
   GitGovernanceError,
   GitHubIssue,
   resolveEpicBranch
@@ -138,7 +139,47 @@ async function runTests() {
   assert.strictEqual(storyPr.base, "epic/m1-cockpit");
   assert.strictEqual(storyPr.head, storyBranch);
   assert.ok(storyPr.cmd.includes(`--base "epic/m1-cockpit"`));
+  assert.strictEqual(storyPr.title, "feat(cockpit): jauge Pression Turbo Temps Réel (US-101)");
   console.log(`  ✔ PASS : Toute PR de story cible la branche d'Epic ('${storyBranch}' -> '${resolvedVolvoEpic}').`);
+
+  // 3.b-bis Validation du formatage des commits et PR selon Conventional Commits
+  const commitCaseArch = formatConventionalCommit({
+    number: 47,
+    title: "[Arch/Apps] US-516 : Migration Applications apps/volvo-cockpit & apps/laguna-cockpit (Suppression Symlink)",
+    body: "",
+    labels: []
+  });
+  assert.strictEqual(
+    commitCaseArch.commitMessage,
+    "refactor(apps): migration Applications apps/volvo-cockpit & apps/laguna-cockpit (Suppression Symlink) (US-516, #47)"
+  );
+  assert.strictEqual(
+    commitCaseArch.prTitle,
+    "refactor(apps): migration Applications apps/volvo-cockpit & apps/laguna-cockpit (Suppression Symlink) (US-516)"
+  );
+
+  const commitCaseBug = formatConventionalCommit({
+    number: 10,
+    title: "[Bug] Alarme intempestive sur patinage lock-up TF-80SC en condition normale",
+    body: "",
+    labels: [{ name: "epic: tcm-diagnostics" }]
+  });
+  assert.strictEqual(
+    commitCaseBug.commitMessage,
+    "fix(tcm-diagnostics): alarme intempestive sur patinage lock-up TF-80SC en condition normale (#10)"
+  );
+
+  const commitCaseExisting = formatConventionalCommit({
+    number: 522,
+    title: "docs(laguna): correct engine specification to 1.9 dCi 130ch FAP (F9Q / EDC16C36)",
+    body: "",
+    labels: []
+  });
+  assert.strictEqual(
+    commitCaseExisting.commitMessage,
+    "docs(laguna): correct engine specification to 1.9 dCi 130ch FAP (F9Q / EDC16C36) (#522)"
+  );
+  console.log("  ✔ PASS : Formatage Conventional Commits validé sur l'ensemble des typologies d'issues.");
 
   // 3.c PR Finale d'Epic vers main avec l'étiquette '🔍 Ready for Human Validation'
   const finalPr = buildFinalEpicPrCommand(

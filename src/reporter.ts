@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CONFIG } from "./config";
+import { PendingPrInfo } from "./git-governance";
 
 export interface ProjectExecutionSummary {
   projectId: string;
@@ -34,6 +35,8 @@ export interface ProjectExecutionSummary {
   }>;
   finalEpicPrUrl?: string;
   humanValidationLabel?: string;
+  blockedByPendingPr?: boolean;
+  pendingValidationPr?: PendingPrInfo;
 }
 
 export interface ConsolidatedNightlyReport {
@@ -44,6 +47,18 @@ export interface ConsolidatedNightlyReport {
 export function generateConsolidatedMarkdownReport(report: ConsolidatedNightlyReport): string {
   const projectSections = report.projects
     .map((proj) => {
+      if (proj.blockedByPendingPr && proj.pendingValidationPr) {
+        return `## 📦 Projet : ${proj.projectName} (\`${proj.githubRepo}\`)
+
+- **Statut du Batch :** ⏸️ **SUSPENDU (PR en cours de validation humaine)**
+- **PR Active à valider :** [PR #${proj.pendingValidationPr.number} — ${proj.pendingValidationPr.title}](${proj.pendingValidationPr.url})
+- **Branche :** \`${proj.pendingValidationPr.headRefName}\` -> \`${proj.pendingValidationPr.baseRefName}\`
+- **Règle de Gouvernance :** Limite de 1 PR à valider par projet. Les batchs suivants sont bloqués tant que l'APK / la feature de cette PR n'est pas testée et validée par l'humain.
+
+### ℹ️ Détails
+_Aucune nouvelle User Story développée dans ce cycle pour garantir l'indépendance de validation des APKs._`;
+      }
+
       const modelBadge = proj.fallbackTriggered
         ? `\`${proj.devModelUsed}\` (⚠️ Bascule Quota automatique depuis \`${CONFIG.AGENT_DEV_MODEL}\`)`
         : `\`${proj.devModelUsed}\` (Primaire nominal)`;
@@ -136,12 +151,14 @@ export async function publishConsolidatedReport(
   }
 
   try {
-    const summaryLines = report.projects.map(
-      (p) =>
-        `• ${p.projectName} (${p.epicBranch}) : Dev=${p.devModelUsed} | Tests=${p.testsPassed ? "OK" : "KO"} | Mergées=${
-          p.mergedStories.length
-        } | Bloquées=${p.blockedStories.length} | PR=${p.finalEpicPrUrl || "N/A"}`
-    );
+    const summaryLines = report.projects.map((p) => {
+      if (p.blockedByPendingPr && p.pendingValidationPr) {
+        return `• ${p.projectName} : ⏸️ BATCH SUSPENDU — PR #${p.pendingValidationPr.number} en attente de validation humaine (${p.pendingValidationPr.url})`;
+      }
+      return `• ${p.projectName} (${p.epicBranch}) : Dev=${p.devModelUsed} | Tests=${p.testsPassed ? "OK" : "KO"} | Mergées=${
+        p.mergedStories.length
+      } | Bloquées=${p.blockedStories.length} | PR=${p.finalEpicPrUrl || "N/A"}`;
+    });
 
     const firstFinalPr = report.projects.find((p) => p.finalEpicPrUrl)?.finalEpicPrUrl;
 

@@ -17,7 +17,10 @@ import {
   buildStoryBranchName,
   buildStoryPrCommand,
   ensureGitHubLabelExists,
+  fetchPendingValidationPrs,
+  formatConventionalCommit,
   GitHubIssue,
+  PendingPrInfo,
   resolveEpicBranch,
   runInProject
 } from "./git-governance";
@@ -63,10 +66,14 @@ export interface RunnerOptions {
   all?: boolean;
   label?: string;
   issueNumber?: number;
+  maxFeatures?: number;
   dryRun?: boolean;
   simulate429?: boolean;
   skipRemoteGit?: boolean;
+  skipPendingPrCheck?: boolean;
+  checkPendingPrsInDryRun?: boolean;
   devEngine?: "gemini" | "claude";
+  customPendingPrFetcher?: (project: ProjectConfig) => PendingPrInfo[];
   customDevExecutor?: (issue: GitHubIssue, model: string, attempt: number, previousQaError?: string) => Promise<void> | void;
   customQaExecutor?: (project: ProjectConfig, issue: GitHubIssue) => { success: boolean; report: string };
 }
@@ -444,15 +451,16 @@ export async function processSingleIssue(
   } else {
     try {
       assertNotDirectPushToMain(storyBranch, "git push storyBranch");
-      // Commit des changements éventuels de Claude
+      // Commit des changements éventuels de Claude / Gemini selon Conventional Commits
       const gitStatus = runInProject(project, "git status --porcelain", { silent: true });
       if (gitStatus.length > 0) {
         runInProject(project, "git add -A", { silent: true });
-        runInProject(
-          project,
-          `git commit -m "feat(issue-${issue.number}): ${issue.title.replace(/"/g, '\\"')}"`,
-          { silent: true }
-        );
+        const commitInfo = formatConventionalCommit(issue);
+        spawnSync("git", ["commit", "-m", commitInfo.commitMessage], {
+          cwd: project.localPath,
+          stdio: "pipe",
+          encoding: "utf-8"
+        });
       }
 
       runInProject(project, `git push -u origin ${storyBranch}`, { silent: true });
@@ -500,10 +508,55 @@ export async function runProjectCycle(
     throw new Error(`Adaptateur projet invalide pour ${project.name} : ${adapterCheck.reason}`);
   }
 
-  const issues = fetchProjectIssues(project, options.label, options.issueNumber);
-  const selectedIssues = options.all ? issues : issues.slice(0, 1);
+  // 1. Vérification Human Gatekeeper : pas plus de 1 PR à valider par projet à la fois
+  const shouldCheckPendingPrs =
+    options.customPendingPrFetcher !== undefined ||
+    (!options.skipPendingPrCheck && (!options.dryRun || options.checkPendingPrsInDryRun));
 
-  logInfo(`${issues.length} issue(s) éligible(s) détectée(s), ${selectedIssues.length} sélectionnée(s) pour ce cycle.`);
+  const pendingPrs = options.customPendingPrFetcher
+    ? options.customPendingPrFetcher(project)
+    : shouldCheckPendingPrs
+      ? fetchPendingValidationPrs(project)
+      : [];
+
+  if (pendingPrs.length >= CONFIG.MAX_PENDING_PRS_PER_PROJECT) {
+    const activePr = pendingPrs[0];
+    logWarning(
+      `🛑 [Human Gatekeeper] Batch bloqué pour ${project.name} : une PR de validation humaine est déjà en cours.`
+    );
+    logWarning(`   -> PR active #${activePr.number} : "${activePr.title}" (${activePr.url})`);
+    logWarning(
+      `   -> Règle d'isolation APK : maximum 1 PR à valider par projet. Aucun nouveau développement tant que cette PR n'est pas testée et validée.`
+    );
+
+    return {
+      projectId: project.id,
+      projectName: project.name,
+      githubRepo: project.githubRepo,
+      epicBranch: project.defaultEpicBranch,
+      devModelUsed: triad.getActiveDevModel(),
+      fallbackTriggered: triad.isFallbackActive(),
+      qaModelUsed: triad.getQaModel(),
+      testsPassed: true,
+      testCommandsRun: project.testCommands,
+      mergedStories: [],
+      blockedStories: [],
+      finalEpicPrUrl: activePr.url,
+      humanValidationLabel: CONFIG.LABELS.READY_FOR_HUMAN,
+      blockedByPendingPr: true,
+      pendingValidationPr: activePr
+    };
+  }
+
+  const issues = fetchProjectIssues(project, options.label, options.issueNumber);
+  const maxFeatures = options.maxFeatures ?? CONFIG.MAX_FEATURES_PER_BATCH;
+  const selectedIssues = options.issueNumber !== undefined
+    ? issues.filter((i) => i.number === options.issueNumber)
+    : issues.slice(0, maxFeatures);
+
+  logInfo(
+    `${issues.length} issue(s) éligible(s) détectée(s), ${selectedIssues.length} sélectionnée(s) pour ce cycle (limite batch: ${maxFeatures} feature max).`
+  );
 
   const outcomes: IssueProcessOutcome[] = [];
   let epicBranch = project.defaultEpicBranch;

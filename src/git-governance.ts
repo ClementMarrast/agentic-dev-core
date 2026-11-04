@@ -17,6 +17,161 @@ export interface GitHubIssue {
   milestone?: { title: string };
 }
 
+export interface PendingPrInfo {
+  number: number;
+  title: string;
+  url: string;
+  headRefName: string;
+  baseRefName: string;
+  labels?: Array<{ name: string }>;
+  createdAt?: string;
+}
+
+export interface ConventionalCommitResult {
+  type: string;
+  scope: string;
+  subject: string;
+  commitMessage: string;
+  prTitle: string;
+}
+
+/**
+ * Normalise et formate un message de commit et un titre de PR selon les spécifications
+ * de Conventional Commits (type(scope): description (US-XXX, #YY)).
+ */
+export function formatConventionalCommit(
+  issue: GitHubIssue,
+  fallbackScope?: string
+): ConventionalCommitResult {
+  const rawTitle = issue.title.trim();
+
+  // 1. Détection si le titre respecte déjà le format Conventional Commits
+  const conventionalMatch = rawTitle.match(
+    /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\(([^)]+)\))?!?:\s*(.+)$/i
+  );
+
+  if (conventionalMatch) {
+    const type = conventionalMatch[1].toLowerCase();
+    const scope = (conventionalMatch[2] || "").toLowerCase().trim();
+    let subject = conventionalMatch[3].trim().replace(/\s*\((?:closes\s+)?#\d+\)$/i, "");
+    const scopeStr = scope ? `(${scope})` : "";
+    const commitMessage = `${type}${scopeStr}: ${subject} (#${issue.number})`;
+    const prTitle = `${type}${scopeStr}: ${subject} (#${issue.number})`;
+    return { type, scope, subject, commitMessage, prTitle };
+  }
+
+  let type = "feat";
+  let scope = "";
+  let subject = rawTitle;
+
+  // 2. Extraction des tags entre crochets : ex [Arch/Apps], [Story/MVP], [Bug], [Feature/Security], [OTA], [Distribution/Android]
+  const tagMatch = subject.match(/^\[(.*?)\]\s*/);
+  let tag = "";
+  if (tagMatch) {
+    tag = tagMatch[1];
+    subject = subject.slice(tagMatch[0].length).trim();
+  }
+
+  // 3. Extraction de l'identifiant User Story : ex US-516, US-101
+  const usMatch = subject.match(/^US-(\d+)\s*[:-]\s*/i) || rawTitle.match(/\b(US-\d+)\b/i);
+  let usId = "";
+  if (usMatch) {
+    usId = (usMatch[1].startsWith("US-") ? usMatch[1] : `US-${usMatch[1]}`).toUpperCase();
+    subject = subject.replace(/^US-\d+\s*[:-]\s*/i, "").trim();
+  }
+
+  // Suppression des tags de test superflus en fin de titre, ex [TEST]
+  subject = subject.replace(/\s*\[TEST\]$/i, "").trim();
+
+  // 4. Détermination du type Conventional Commits
+  const lowerTag = tag.toLowerCase();
+  const lowerSubj = subject.toLowerCase();
+  if (
+    lowerTag.includes("bug") ||
+    lowerTag.includes("fix") ||
+    lowerSubj.startsWith("fix ") ||
+    lowerSubj.startsWith("corriger ") ||
+    lowerSubj.startsWith("correction ")
+  ) {
+    type = "fix";
+  } else if (lowerTag.includes("arch") || lowerTag.includes("refactor")) {
+    type = "refactor";
+  } else if (lowerTag.includes("docs") || lowerTag.includes("spec") || lowerTag.includes("adr")) {
+    type = "docs";
+  } else if (
+    lowerTag.includes("test") ||
+    lowerTag.includes("benchmark") ||
+    lowerTag.includes("qa") ||
+    lowerTag.includes("e2e")
+  ) {
+    type = "test";
+  } else if (
+    lowerTag.includes("ci") ||
+    lowerTag.includes("build") ||
+    lowerTag.includes("packaging") ||
+    lowerTag.includes("distribution") ||
+    lowerTag.includes("stores")
+  ) {
+    type = "build";
+  } else if (lowerTag.includes("style")) {
+    type = "style";
+  } else if (lowerTag.includes("perf")) {
+    type = "perf";
+  } else {
+    type = "feat";
+  }
+
+  // 5. Détermination du scope
+  if (tag.includes("/")) {
+    const parts = tag.split("/");
+    const lastPart = parts[parts.length - 1].toLowerCase().trim();
+    if (!["story", "feature", "bug"].includes(lastPart)) {
+      scope = lastPart;
+    } else if (!["story", "feature", "bug"].includes(parts[0].toLowerCase().trim())) {
+      scope = parts[0].toLowerCase().trim();
+    }
+  } else if (tag && !["bug", "story", "feature", "fix"].includes(tag.toLowerCase())) {
+    scope = tag.toLowerCase().trim();
+  }
+
+  // Scope fallback via label d'Epic si aucun scope extrait
+  if (!scope && issue.labels) {
+    const epicLabel = issue.labels.find((l) => l.name.toLowerCase().startsWith("epic:"));
+    if (epicLabel) {
+      scope = epicLabel.name
+        .replace(/^epic:\s*/i, "")
+        .trim()
+        .toLowerCase()
+        .replace(/^epic\//, "");
+    }
+  }
+
+  if (!scope && fallbackScope) {
+    scope = fallbackScope.toLowerCase().trim();
+  }
+
+  scope = scope
+    .replace(/[^a-z0-9\-]/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  // 6. Normalisation de la casse du sujet (minuscule initiale sauf acronymes)
+  if (/^\p{Lu}\p{Ll}/u.test(subject)) {
+    subject = subject.charAt(0).toLowerCase() + subject.slice(1);
+  }
+
+  const scopeStr = scope ? `(${scope})` : "";
+  const refStr = usId ? `(${usId}, #${issue.number})` : `(#${issue.number})`;
+  const prRefStr = usId ? `(${usId})` : `(#${issue.number})`;
+
+  return {
+    type,
+    scope,
+    subject,
+    commitMessage: `${type}${scopeStr}: ${subject} ${refStr}`,
+    prTitle: `${type}${scopeStr}: ${subject} ${prRefStr}`
+  };
+}
+
 export class GitGovernanceError extends Error {
   constructor(message: string) {
     super(message);
@@ -83,12 +238,27 @@ export function buildStoryPrCommand(
   issue: GitHubIssue,
   devModel: string,
   qaModel: string
-): { base: string; head: string; cmd: string } {
+): { base: string; head: string; cmd: string; title: string; body: string } {
   assertNotDirectPushToMain(epicBranch, "story PR target");
-  const title = issue.title.replace(/"/g, '\\"');
-  const body = `Résout #${issue.number}.\\n\\n- **Modèle Dev :** \`${devModel}\`\\n- **Validé par QA Gate :** \`${qaModel}\`\\n- **Branche d'Epic cible :** \`${epicBranch}\``;
-  const cmd = `gh pr create --base "${epicBranch}" --head "${storyBranch}" --title "${title}" --body "${body}" -R ${project.githubRepo}`;
-  return { base: epicBranch, head: storyBranch, cmd };
+  const commitInfo = formatConventionalCommit(issue);
+  const title = commitInfo.prTitle;
+  const body = [
+    `Résout #${issue.number}.`,
+    "",
+    `- **Modèle Dev :** \`${devModel}\``,
+    `- **Validé par QA Gate :** \`${qaModel}\``,
+    `- **Branche d'Epic cible :** \`${epicBranch}\``
+  ].join("\n");
+
+  const escapedTitle = title.replace(/"/g, '\\"').replace(/`/g, "\\`");
+  const escapedBody = body
+    .replace(/"/g, '\\"')
+    .replace(/`/g, "\\`")
+    .replace(/\$/g, "\\$")
+    .replace(/\n/g, "\\n");
+
+  const cmd = `gh pr create --base "${epicBranch}" --head "${storyBranch}" --title "${escapedTitle}" --body "${escapedBody}" -R ${project.githubRepo}`;
+  return { base: epicBranch, head: storyBranch, cmd, title, body };
 }
 
 /**
@@ -101,7 +271,7 @@ export function buildFinalEpicPrCommand(
   mergedStories: Array<{ number: number; title: string }>,
   devModel: string,
   qaModel: string
-): { base: string; head: string; label: string; cmd: string } {
+): { base: string; head: string; label: string; cmd: string; title: string; body: string } {
   if (!epicBranch.startsWith("epic/")) {
     throw new GitGovernanceError(`La branche source d'une PR finale vers main doit être une branche d'Epic ('epic/*'), reçu: '${epicBranch}'`);
   }
@@ -109,23 +279,37 @@ export function buildFinalEpicPrCommand(
   const label = CONFIG.LABELS.READY_FOR_HUMAN;
   const storiesMd =
     mergedStories.length > 0
-      ? mergedStories.map((s) => `- #${s.number} : ${s.title}`).join("\\n")
+      ? mergedStories.map((s) => `- #${s.number} : ${s.title}`).join("\n")
       : "- Validation consolidée de l'Epic";
 
-  const body =
-    `## 🌙 Batch Control Plane (${project.name}) — ${dateStr}\\n\\n` +
-    `Cet Epic regroupe les User Stories développées par **${devModel}** et validées par la QA Gate **${qaModel}**.\\n\\n` +
-    `### Stories intégrées :\\n${storiesMd}\\n\\n` +
-    `🔍 **Gouvernance Human Gatekeeper** : Prêt pour validation et merge humain vers \`main\`.`;
+  const body = [
+    `## 🌙 Batch Control Plane (${project.name}) — ${dateStr}`,
+    "",
+    `Cet Epic regroupe les User Stories développées par **${devModel}** et validées par la QA Gate **${qaModel}**.`,
+    "",
+    "### Stories intégrées :",
+    storiesMd,
+    "",
+    "🔍 **Gouvernance Human Gatekeeper** : Prêt pour validation et merge humain vers `main`."
+  ].join("\n");
 
   const title = `[Epic Release] ${project.name} : ${epicBranch} (${dateStr})`;
-  const cmd = `gh pr create --base main --head "${epicBranch}" --title "${title.replace(/"/g, '\\"')}" --body "${body.replace(/"/g, '\\"')}" --label "${label}" -R ${project.githubRepo}`;
+  const escapedTitle = title.replace(/"/g, '\\"').replace(/`/g, "\\`");
+  const escapedBody = body
+    .replace(/"/g, '\\"')
+    .replace(/`/g, "\\`")
+    .replace(/\$/g, "\\$")
+    .replace(/\n/g, "\\n");
+
+  const cmd = `gh pr create --base main --head "${epicBranch}" --title "${escapedTitle}" --body "${escapedBody}" --label "${label}" -R ${project.githubRepo}`;
 
   return {
     base: "main",
     head: epicBranch,
     label,
-    cmd
+    cmd,
+    title,
+    body
   };
 }
 
@@ -161,4 +345,26 @@ export function ensureGitHubLabelExists(project: ProjectConfig, labelName: strin
     ["label", "create", labelName, "--color", color, "--force", "-R", project.githubRepo],
     { cwd: project.localPath, stdio: "pipe" }
   );
+}
+
+/**
+ * Récupère les Pull Requests ouvertes en attente de validation humaine pour un projet donné.
+ * Détecte les PRs ouvertes étiquetées '🔍 Ready for Human Validation' ou ciblant 'main'/'master'.
+ */
+export function fetchPendingValidationPrs(project: ProjectConfig): PendingPrInfo[] {
+  try {
+    const json = execSync(
+      `gh pr list --state open -R ${project.githubRepo} --json number,title,url,headRefName,baseRefName,labels,createdAt --limit 50`,
+      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
+    );
+    const prs: PendingPrInfo[] = JSON.parse(json);
+
+    return prs.filter((pr) => {
+      const hasReadyLabel = pr.labels?.some((l) => l.name === CONFIG.LABELS.READY_FOR_HUMAN);
+      const targetsMain = pr.baseRefName === "main" || pr.baseRefName === "master";
+      return hasReadyLabel || targetsMain;
+    });
+  } catch {
+    return [];
+  }
 }

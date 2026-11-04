@@ -25,6 +25,12 @@ export const CONFIG = {
   // Plafond de rétroaction QA -> Dev (2 retries max avant passage en status: blocked)
   MAX_QA_RETRIES: Number(process.env.MAX_QA_RETRIES ?? 2),
 
+  // Limite stricte de User Stories développées par batch (isolation des APKs et recette indépendante)
+  MAX_FEATURES_PER_BATCH: Number(process.env.MAX_FEATURES_PER_BATCH ?? 1),
+
+  // Plafond de PRs ouvertes en attente de validation humaine par projet (1 max)
+  MAX_PENDING_PRS_PER_PROJECT: Number(process.env.MAX_PENDING_PRS_PER_PROJECT ?? 1),
+
   // Identifiants Notion pour le Reporting Matinal consolidé
   NOTION_API_KEY: process.env.NOTION_API_KEY || process.env.NOTION_TOKEN || "",
   NOTION_JOURNAL_DB_ID: process.env.NOTION_JOURNAL_DB_ID || "b3af95c7-7375-44ad-8d32-b18bff426baa",
