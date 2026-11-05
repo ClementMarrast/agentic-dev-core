@@ -119,11 +119,20 @@ Règles impératives :
 3. Ne commite pas et ne pousse pas (la gouvernance Git est prise en charge par le Control Plane).`;
 
   try {
-    execSync(`claude -p "${prompt.replace(/"/g, '\\"')}" --dangerously-skip-permissions`, {
+    const res = spawnSync("claude", ["-p", prompt, "--dangerously-skip-permissions"], {
       cwd: project.localPath,
       stdio: "inherit",
-      encoding: "utf-8"
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        CLAUDE_CODE_OAUTH_TOKEN:
+          process.env.CLAUDE_CODE_OAUTH_TOKEN ||
+          "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"
+      }
     });
+    if (res.error || (res.status !== null && res.status !== 0)) {
+      throw new Error(`Échec de l'exécution Claude CLI : ${res.error?.message || `code de sortie ${res.status}`}`);
+    }
   } catch (err: any) {
     throw new Error(`Échec de l'exécution Claude CLI : ${err.message}`);
   }
@@ -278,6 +287,11 @@ export async function processSingleIssue(
 
     // Isolation absolue : Chaque feature repart STRICTEMENT de origin/main propre
     try {
+      const dirty = runInProject(project, "git status --porcelain", { silent: true });
+      if (dirty.length > 0) {
+        logWarning(`Modifications locales non commitées détectées dans ${project.name}. Mise en stash temporaire...`);
+        runInProject(project, 'git stash push -m "agentic-dev-core: auto-stash before nightly batch"', { silent: true });
+      }
       runInProject(project, "git checkout main", { silent: true });
       runInProject(project, "git fetch origin main", { silent: true });
       runInProject(project, "git reset --hard origin/main", { silent: true });
@@ -461,7 +475,27 @@ export async function processSingleIssue(
         });
       }
 
-      runInProject(project, `git push -u origin ${storyBranch}`, { silent: true });
+      // Vérifier si des commits ont effectivement été produits
+      const commitsAhead = runInProject(project, "git log origin/main..HEAD --oneline", { silent: true }).trim();
+      if (!commitsAhead) {
+        logError(`🛑 Aucune modification de code ou commit produit par le moteur Dev pour #${issue.number}. Abandon de la PR.`);
+        runInProject(project, "git checkout main", { silent: true });
+        runInProject(project, "git reset --hard origin/main", { silent: true });
+        return {
+          success: false,
+          blocked: true,
+          issue,
+          storyBranch,
+          epicBranch: "main",
+          devModelUsed,
+          fallbackTriggered,
+          fallbackReason,
+          qaRetries: attempt,
+          errorReport: "Aucune modification de code détectée après la passe Dev."
+        };
+      }
+
+      runInProject(project, `git push -u origin ${storyBranch} --force-with-lease`, { silent: true });
       ensureGitHubLabelExists(project, CONFIG.LABELS.READY_FOR_HUMAN, "FBCA04");
       const out = runInProject(project, prSpec.cmd, { silent: true });
       prUrl = out.trim();
@@ -471,7 +505,23 @@ export async function processSingleIssue(
       runInProject(project, "git checkout main", { silent: true });
       runInProject(project, "git reset --hard origin/main", { silent: true });
     } catch (err: any) {
-      logWarning(`Opération PR Git distante ignorée ou déjà mergée : ${err.message}`);
+      logError(`Échec de l'ouverture de la PR Git distante pour #${issue.number} : ${err.message}`);
+      try {
+        runInProject(project, "git checkout main", { silent: true });
+        runInProject(project, "git reset --hard origin/main", { silent: true });
+      } catch {}
+      return {
+        success: false,
+        blocked: true,
+        issue,
+        storyBranch,
+        epicBranch: "main",
+        devModelUsed,
+        fallbackTriggered,
+        fallbackReason,
+        qaRetries: attempt,
+        errorReport: err.message
+      };
     }
   }
 

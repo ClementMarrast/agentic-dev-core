@@ -4,12 +4,12 @@
   "private": true,
   "description": "Control Plane transverse d'orchestration agentique multi-projets (Volvo P3 Logger & Storya Kids)",
   "scripts": {
-    "run:volvo": "npx tsx src/cli.ts --repo=volvo",
-    "run:kids": "npx tsx src/cli.ts --repo=kids",
-    "run:all": "npx tsx src/cli.ts --portfolio --all",
-    "run:tonight": "npx tsx src/cli.ts --portfolio --all --label=\"batch: tonight\"",
-    "daemon:all": "npx tsx src/cli.ts --portfolio --all --daemon",
-    "daemon:tonight": "npx tsx src/cli.ts --portfolio --all --label=\"batch: tonight\" --daemon",
+    "run:volvo": "npx tsx src/cli.ts --repo=volvo --dev-engine=claude",
+    "run:kids": "npx tsx src/cli.ts --repo=kids --dev-engine=claude",
+    "run:all": "npx tsx src/cli.ts --portfolio --all --dev-engine=claude",
+    "run:tonight": "npx tsx src/cli.ts --portfolio --all --label=\"batch: tonight\" --dev-engine=claude",
+    "daemon:all": "npx tsx src/cli.ts --portfolio --all --daemon --dev-engine=claude",
+    "daemon:tonight": "npx tsx src/cli.ts --portfolio --all --label=\"batch: tonight\" --daemon --dev-engine=claude",
     "typecheck": "npx tsc --noEmit",
     "test": "npx tsx tests/control-plane.test.ts"
   },
